@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Game {
+  id              String   @id @default(cuid())
+  date            DateTime @unique @db.Date
+  answerEncrypted String
+  wordLength      Int
+  maxAttempts     Int      @default(6)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  players Player[]
+  guesses Guess[]
+}
+
+model Player {
+  id              String    @id @default(cuid())
+  gameId          String
+  name            String
+  nameKey         String
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+  durationSeconds Int?
+  attemptsUsed    Int       @default(0)
+  solved          Boolean   @default(false)
+  failed          Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  game    Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  guesses Guess[]
+
+  @@unique([gameId, nameKey])
+  @@index([gameId])
+}
+
+model Guess {
+  id            String   @id @default(cuid())
+  playerId      String
+  gameId        String
+  attemptNumber Int
+  guess         String
+  resultJson    Json
+  createdAt     DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, attemptNumber])
+  @@index([gameId])
+}
