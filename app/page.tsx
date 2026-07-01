@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type TileStatus = "correct" | "present" | "absent";
 type TileResult = { letter: string; status: TileStatus };
@@ -25,6 +25,10 @@ function formatTime(seconds: number) {
   return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
+function Loader({ label = "Уншиж байна" }: { label?: string }) {
+  return <span className="loader" aria-label={label} role="status" />;
+}
+
 export default function HomePage() {
   const [name, setName] = useState("");
   const [session, setSession] = useState<PublicGame | null>(null);
@@ -32,10 +36,12 @@ export default function HomePage() {
   const [rows, setRows] = useState<TileResult[][]>([]);
   const [message, setMessage] = useState("");
   const [finished, setFinished] = useState(false);
+  const [solved, setSolved] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [keyStatuses, setKeyStatuses] = useState<Record<string, TileStatus>>({});
-  const [loading, setLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!startedAt || finished) return;
@@ -47,7 +53,7 @@ export default function HomePage() {
 
   const blankRows = useMemo(() => {
     if (!session) return [];
-    const totalRows = Array.from({ length: session.maxAttempts }, (_, rowIndex) => {
+    return Array.from({ length: session.maxAttempts }, (_, rowIndex) => {
       if (rows[rowIndex]) return rows[rowIndex];
       const letters = rowIndex === rows.length ? [...current] : [];
       return Array.from({ length: session.wordLength }, (_, index) => ({
@@ -55,12 +61,15 @@ export default function HomePage() {
         status: "absent" as TileStatus
       }));
     });
-    return totalRows;
   }, [current, rows, session]);
+
+  const progress = session ? Math.round((rows.length / session.maxAttempts) * 100) : 0;
 
   async function startGame(event: React.FormEvent) {
     event.preventDefault();
-    setLoading(true);
+    if (starting) return;
+
+    setStarting(true);
     setMessage("");
     const response = await fetch("/api/player/start", {
       method: "POST",
@@ -68,48 +77,52 @@ export default function HomePage() {
       body: JSON.stringify({ name })
     });
     const data = await response.json();
-    setLoading(false);
+    setStarting(false);
+
     if (!response.ok) {
       setMessage(data.error ?? "Алдаа гарлаа.");
       return;
     }
+
     setSession(data);
     setStartedAt(Date.now());
     setElapsed(0);
   }
 
-  function addLetter(letter: string) {
-    if (!session || finished) return;
-    if (current.length < session.wordLength) {
-      setCurrent((value) => value + letter);
-    }
-  }
+  const addLetter = useCallback(
+    (letter: string) => {
+      if (!session || finished || submitting) return;
+      setCurrent((value) => ([...value].length < session.wordLength ? value + letter : value));
+    },
+    [finished, session, submitting]
+  );
 
-  function removeLetter() {
-    if (finished) return;
-    setCurrent((value) => value.slice(0, -1));
-  }
+  const removeLetter = useCallback(() => {
+    if (finished || submitting) return;
+    setCurrent((value) => [...value].slice(0, -1).join(""));
+  }, [finished, submitting]);
 
-  async function submitGuess() {
-    if (!session || finished || loading) return;
+  const submitGuess = useCallback(async () => {
+    if (!session || finished || submitting) return;
     if ([...current].length !== session.wordLength) {
       setMessage(`Үг ${session.wordLength} үсэгтэй байх ёстой.`);
       return;
     }
 
-    setLoading(true);
+    setSubmitting(true);
     setMessage("");
+    const guessedWord = current;
     const response = await fetch("/api/game/guess", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         playerId: session.playerId,
         gameId: session.gameId,
-        guess: current
+        guess: guessedWord
       })
     });
     const data = await response.json();
-    setLoading(false);
+    setSubmitting(false);
 
     if (!response.ok) {
       setMessage(data.error ?? "Алдаа гарлаа.");
@@ -132,19 +145,22 @@ export default function HomePage() {
 
     if (data.finished) {
       setFinished(true);
+      setSolved(Boolean(data.solved));
       setElapsed(data.durationSeconds ?? elapsed);
       setMessage(data.solved ? "Та зөв таалаа" : "Оролдлого дууслаа");
     }
-  }
+  }, [current, elapsed, finished, session, submitting]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!session) return;
+      if (!session || event.isComposing) return;
       if (event.key === "Enter") {
+        event.preventDefault();
         void submitGuess();
         return;
       }
       if (event.key === "Backspace") {
+        event.preventDefault();
         removeLetter();
         return;
       }
@@ -155,12 +171,18 @@ export default function HomePage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  });
+  }, [addLetter, removeLetter, session, submitGuess]);
 
   return (
     <main className="page-shell">
       <nav className="top-nav">
-        <div className="brand">Үглэ</div>
+        <div className="brand-block">
+          <div className="brand-mark">Ү</div>
+          <div>
+            <div className="brand">Үглэ</div>
+            <span className="brand-subtitle">Өдөр бүрийн Монгол үг</span>
+          </div>
+        </div>
         <div className="nav-links">
           <Link href="/leaderboard">Чансаа</Link>
           <Link href="/admin">Админ</Link>
@@ -168,20 +190,30 @@ export default function HomePage() {
       </nav>
 
       {!session ? (
-        <section className="entry-panel">
-          <h1>Өнөөдрийн үг</h1>
-          <form onSubmit={startGame} className="entry-form">
+        <section className="entry-hero">
+          <div className="hero-copy">
+            <span className="eyebrow">Оффисын өдөр тутмын сорил</span>
+            <h1>Өнөөдрийн үгийг таагаад чансаанд нэрээ үлдээгээрэй.</h1>
+            <p>Нууц үг зөвхөн сервер дээр хадгалагдана. Та зөвхөн таамгаа илгээнэ.</p>
+          </div>
+
+          <form onSubmit={startGame} className="entry-panel">
+            <h2>Тоглоом эхлүүлэх</h2>
             <label htmlFor="name">Нэрээ оруулна уу</label>
-            <input
-              id="name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Жишээ: Бат"
-              required
-            />
-            <button disabled={loading}>{loading ? "Түр хүлээнэ үү" : "Тоглоом эхлүүлэх"}</button>
+            <div className="input-shell">
+              <input
+                id="name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Жишээ: Бат"
+                required
+              />
+            </div>
+            <button className="primary-button" disabled={starting}>
+              {starting ? <Loader label="Тоглоом эхлүүлж байна" /> : "Тоглоом эхлүүлэх"}
+            </button>
+            {message ? <p className="message error">{message}</p> : null}
           </form>
-          {message ? <p className="message error">{message}</p> : null}
         </section>
       ) : (
         <section className="game-layout">
@@ -202,53 +234,96 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="board" style={{ gridTemplateRows: `repeat(${session.maxAttempts}, 1fr)` }}>
-            {blankRows.map((row, rowIndex) => (
-              <div
-                className="board-row"
-                style={{ gridTemplateColumns: `repeat(${session.wordLength}, 1fr)` }}
-                key={rowIndex}
-              >
-                {row.map((tile, tileIndex) => (
-                  <div
-                    className={`tile ${rows[rowIndex] ? tile.status : tile.letter ? "filled" : ""}`}
-                    key={`${rowIndex}-${tileIndex}`}
-                  >
-                    {tile.letter}
-                  </div>
-                ))}
-              </div>
-            ))}
+          <div className="progress-track" aria-hidden="true">
+            <span style={{ width: `${progress}%` }} />
           </div>
 
-          {message ? <p className={`message ${finished ? "success" : "error"}`}>{message}</p> : null}
+          <div className={`board-wrap ${submitting ? "is-loading" : ""}`}>
+            <div className="board" style={{ gridTemplateRows: `repeat(${session.maxAttempts}, 1fr)` }}>
+              {blankRows.map((row, rowIndex) => (
+                <div
+                  className="board-row"
+                  style={{ gridTemplateColumns: `repeat(${session.wordLength}, 1fr)` }}
+                  key={rowIndex}
+                >
+                  {row.map((tile, tileIndex) => (
+                    <div
+                      className={`tile ${
+                        rows[rowIndex] ? tile.status : tile.letter ? "filled" : ""
+                      } ${rowIndex === rows.length && submitting ? "pending" : ""}`}
+                      key={`${rowIndex}-${tileIndex}`}
+                    >
+                      {tile.letter}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            {submitting ? (
+              <div className="board-loader">
+                <Loader label="Таамаг шалгаж байна" />
+              </div>
+            ) : null}
+          </div>
+
+          {message && !solved ? <p className={`message ${finished ? "success" : "error"}`}>{message}</p> : null}
 
           <div className="keyboard" aria-label="Mongolian Cyrillic keyboard">
             {keys.map((row, index) => (
               <div className="key-row" key={index}>
                 {index === 2 ? (
-                  <button className="key action" onClick={submitGuess} disabled={loading || finished}>
-                    OK
+                  <button
+                    className="key action enter-key"
+                    onClick={submitGuess}
+                    disabled={submitting || finished}
+                    aria-label="Таамаг илгээх"
+                  >
+                    {submitting ? <Loader label="Таамаг илгээж байна" /> : "Enter"}
                   </button>
                 ) : null}
                 {row.map((letter) => (
                   <button
                     className={`key ${keyStatuses[letter] ?? ""}`}
                     onClick={() => addLetter(letter)}
-                    disabled={finished}
+                    disabled={finished || submitting}
                     key={letter}
                   >
                     {letter}
                   </button>
                 ))}
                 {index === 2 ? (
-                  <button className="key action" onClick={removeLetter} disabled={finished}>
+                  <button
+                    className="key action"
+                    onClick={removeLetter}
+                    disabled={finished || submitting}
+                    aria-label="Сүүлийн үсэг устгах"
+                  >
                     ⌫
                   </button>
                 ) : null}
               </div>
             ))}
           </div>
+
+          {solved ? (
+            <div className="success-modal" role="dialog" aria-modal="true">
+              <div className="success-card">
+                <div className="success-rings" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <span className="success-kicker">Амжилттай</span>
+                <h2>Баяр хүргэе!</h2>
+                <p>
+                  Та өнөөдрийн үгийг {rows.length} алхамд, {formatTime(elapsed)} хугацаанд зөв таалаа.
+                </p>
+                <Link className="primary-button" href="/leaderboard">
+                  Чансаа харах
+                </Link>
+              </div>
+            </div>
+          ) : null}
         </section>
       )}
     </main>
